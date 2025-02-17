@@ -1,0 +1,202 @@
+fred_project/
+├── README.md
+├── requirements.txt
+├── config/
+│   └── config.py
+├── notebooks/
+│   ├── examples/
+│   │   ├── 01_getting_started.ipynb
+│   │   ├── 02_data_exploration.ipynb
+│   │   └── 03_time_series_analysis.ipynb
+│   └── research/
+│       └── economic_indicators.ipynb
+├── src/
+│   ├── __init__.py
+│   ├── api/
+│   │   ├── __init__.py
+│   │   └── fred_client.py
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── economic_data.py
+│   └── utils/
+│       ├── __init__.py
+│       └── helpers.py
+└── tests/
+    ├── __init__.py
+    ├── test_fred_client.py
+    └── test_economic_data.py
+
+    
+
+# requirements.txt
+fredapi==2.1.0
+pandas==2.1.0
+python-dotenv==1.0.0
+requests==2.31.0
+
+# config/config.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class Config:
+    FRED_API_KEY = os.getenv('FRED_API_KEY')
+    BASE_URL = 'https://api.stlouisfed.org/fred'
+    DEFAULT_PARAMS = {
+        'api_key': FRED_API_KEY,
+        'file_type': 'json'
+    }
+
+# src/api/fred_client.py
+from typing import Dict, Optional, List
+import requests
+from config.config import Config
+
+class FREDClient:
+    def __init__(self):
+        self.config = Config()
+        self.session = requests.Session()
+        self.session.params = self.config.DEFAULT_PARAMS
+
+    def get_series(self, series_id: str, **kwargs) -> Dict:
+        """
+        Fetch time series data for a given series ID.
+        
+        Args:
+            series_id (str): FRED series identifier
+            **kwargs: Additional parameters to pass to the API
+        
+        Returns:
+            Dict: JSON response containing the series data
+        """
+        endpoint = f"{self.config.BASE_URL}/series/observations"
+        params = {
+            'series_id': series_id,
+            **kwargs
+        }
+        
+        response = self.session.get(endpoint, params=params)
+        response.raise_for_status()
+        return response.json()
+
+    def search_series(self, search_text: str, **kwargs) -> Dict:
+        """
+        Search for series matching the given text.
+        
+        Args:
+            search_text (str): Text to search for
+            **kwargs: Additional parameters to pass to the API
+        
+        Returns:
+            Dict: JSON response containing search results
+        """
+        endpoint = f"{self.config.BASE_URL}/series/search"
+        params = {
+            'search_text': search_text,
+            **kwargs
+        }
+        
+        response = self.session.get(endpoint, params=params)
+        response.raise_for_status()
+        return response.json()
+
+# src/models/economic_data.py
+from dataclasses import dataclass
+from typing import List, Optional
+from datetime import datetime
+
+@dataclass
+class Observation:
+    date: datetime
+    value: float
+    
+@dataclass
+class Series:
+    id: str
+    title: str
+    frequency: str
+    units: str
+    observations: List[Observation]
+    notes: Optional[str] = None
+
+    @classmethod
+    def from_api_response(cls, response: dict) -> 'Series':
+        observations = [
+            Observation(
+                date=datetime.strptime(obs['date'], '%Y-%m-%d'),
+                value=float(obs['value']) if obs['value'] != '.' else None
+            )
+            for obs in response['observations']
+        ]
+        
+        return cls(
+            id=response['series_id'],
+            title=response.get('title', ''),
+            frequency=response.get('frequency', ''),
+            units=response.get('units', ''),
+            observations=observations,
+            notes=response.get('notes')
+        )
+
+# src/utils/helpers.py
+from typing import List
+import pandas as pd
+from models.economic_data import Series
+
+def series_to_dataframe(series: Series) -> pd.DataFrame:
+    """
+    Convert a Series object to a pandas DataFrame.
+    
+    Args:
+        series (Series): Series object containing economic data
+    
+    Returns:
+        pd.DataFrame: DataFrame with date index and values
+    """
+    data = {
+        'date': [obs.date for obs in series.observations],
+        'value': [obs.value for obs in series.observations]
+    }
+    df = pd.DataFrame(data)
+    df.set_index('date', inplace=True)
+    return df
+
+# tests/test_fred_client.py
+import pytest
+from src.api.fred_client import FREDClient
+
+def test_get_series():
+    client = FREDClient()
+    response = client.get_series('GDP')
+    assert response is not None
+    assert 'observations' in response
+
+def test_search_series():
+    client = FREDClient()
+    response = client.search_series('unemployment')
+    assert response is not None
+    assert 'seriess' in response
+
+# tests/test_economic_data.py
+import pytest
+from datetime import datetime
+from src.models.economic_data import Series, Observation
+
+def test_series_from_api_response():
+    api_response = {
+        'series_id': 'GDP',
+        'title': 'Gross Domestic Product',
+        'frequency': 'Quarterly',
+        'units': 'Billions of Dollars',
+        'observations': [
+            {'date': '2023-01-01', 'value': '25723.9'},
+            {'date': '2023-04-01', 'value': '26047.2'}
+        ]
+    }
+    
+    series = Series.from_api_response(api_response)
+    assert series.id == 'GDP'
+    assert len(series.observations) == 2
+    assert isinstance(series.observations[0].date, datetime)
+    assert isinstance(series.observations[0].value, float)
